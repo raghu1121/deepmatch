@@ -5,6 +5,11 @@ const cors = require('cors');
 const crypto = require('crypto');
 require('dotenv').config();
 
+// Polyfill fetch for Node.js < 18 compatibility
+if (typeof globalThis.fetch === 'undefined') {
+  require('undici/global');
+}
+
 // Validate JWT_SECRET at startup
 if (!process.env.JWT_SECRET) {
   console.warn('[WARN] JWT_SECRET not set in environment. Using default for development only.');
@@ -16,19 +21,36 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Simple rate limiting middleware (1000 requests per 15 minutes per IP)
+// Rate limiting middleware (1000 requests per 15 minutes per IP)
 const requestCounts = new Map();
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000;
+const RATE_LIMIT_MAX = 1000;
+
+// Clean up expired entries every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, timestamps] of requestCounts) {
+    const filtered = timestamps.filter(t => t > now - RATE_LIMIT_WINDOW);
+    if (filtered.length === 0) {
+      requestCounts.delete(ip);
+    } else {
+      requestCounts.set(ip, filtered);
+    }
+  }
+}, 60 * 1000).unref();
+
+app.set('trust proxy', true);
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-  const windowStart = now - 15 * 60 * 1000;
+  const windowStart = now - RATE_LIMIT_WINDOW;
   
   if (!requestCounts.has(ip)) {
     requestCounts.set(ip, []);
   }
   
   const timestamps = requestCounts.get(ip).filter(t => t > windowStart);
-  if (timestamps.length > 1000) {
+  if (timestamps.length > RATE_LIMIT_MAX) {
     return res.status(429).json({ error: 'Rate limit exceeded' });
   }
   
@@ -40,6 +62,13 @@ app.use((req, res, next) => {
 // Initialize SQLite database
 const DB_PATH = process.env.DB_PATH || './deepmatch.db';
 const db = new sqlite3.Database(DB_PATH);
+
+// Enable foreign key constraints and configure for concurrency
+db.serialize(() => {
+  db.run('PRAGMA foreign_keys = ON');
+  db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA busy_timeout = 5000');
+});
 
 // Create tables
 db.serialize(() => {
@@ -142,7 +171,11 @@ app.post('/api/users/create', (req, res) => {
         }
 
         // Generate JWT token for client
-        const token = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ userId }, JWT_SECRET, { 
+          expiresIn: '30d',
+          algorithm: 'HS256',
+          noTimestamp: false
+        });
 
         res.json({
           userId,
@@ -322,7 +355,7 @@ app.post('/api/profile/build', authenticateToken, async (req, res) => {
        encrypted_blob=excluded.encrypted_blob,
        embedding_vector=excluded.embedding_vector,
        updated_at=excluded.updated_at`,
-    [userId, encryptedBlob, JSON.stringify(embeddingVector), Date.now()],
+    [userId, encryptedBlob, typeof embeddingVector === 'string' ? embeddingVector : JSON.stringify(embeddingVector), Date.now()],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ message: 'Profile updated' });
@@ -420,7 +453,7 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'No token provided' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
     if (err) {
       console.log(`[AUTH] Invalid token received: ${err.message}`);
       return res.status(403).json({ error: 'Invalid token' });
