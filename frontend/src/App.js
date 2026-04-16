@@ -22,7 +22,7 @@ function decryptText(encrypted, key) {
     return decrypted;
   } catch (e) {
     console.error('Decryption error:', e);
-    return plaintext;
+    return '';
   }
 }
 
