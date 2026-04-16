@@ -1,0 +1,31 @@
+services:
+  # ── Backend API ──────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: deepmatch-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-super-secret-key-for-dev}
+      - PORT=3000
+      - LLM_HOST=http://host.docker.internal:1234
+      - LLM_MODEL=${LLM_MODEL:-local-model}
+      - DB_PATH=/app/data/deepmatch.db
+    volumes:
+      - backend-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ── Frontend (nginx) ────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: deepmatch-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
