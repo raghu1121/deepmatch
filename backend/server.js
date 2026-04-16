@@ -50,7 +50,7 @@ app.use((req, res, next) => {
   }
   
   const timestamps = requestCounts.get(ip).filter(t => t > windowStart);
-  if (timestamps.length > RATE_LIMIT_MAX) {
+  if (timestamps.length >= RATE_LIMIT_MAX) {
     return res.status(429).json({ error: 'Rate limit exceeded' });
   }
   
@@ -408,11 +408,11 @@ app.get('/api/matches/next', authenticateToken, (req, res) => {
 
     // Get all other active users
     db.all(
-      `SELECT u.id, u.random_name, u.points, u.tier, p.embedding_vector 
-       FROM users u
-       JOIN profiles p ON u.id = p.user_id
-       WHERE u.id != ? AND u.active = 1 AND u.deposit_paid = 1
-       AND u.last_login > ?`,
+        `SELECT u.id, u.random_name, u.points, u.tier, p.embedding_vector 
+        FROM users u
+        JOIN profiles p ON u.id = p.user_id
+        WHERE u.id != ? AND u.active = 1
+        AND u.last_login > ?`,
       [userId, Date.now() - 7 * 24 * 60 * 60 * 1000], // Active in last 7 days
       (err, candidates) => {
         if (err || candidates.length === 0) {
@@ -699,7 +699,30 @@ function updateUserTier(userId, points) {
   });
 }
 
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error('[SERVER-ERROR]', err.stack);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, closing database connection...');
+  db.close((err) => {
+    if (err) console.error('Database close error:', err.message);
+    process.exit(0);
+  });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Deep Match API running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Database: ${DB_PATH}`);
+  console.log(`LLM Host: ${process.env.LLM_HOST || 'http://localhost:1234'}`);
 });
